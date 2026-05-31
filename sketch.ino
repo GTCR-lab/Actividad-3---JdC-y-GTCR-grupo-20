@@ -1,33 +1,8 @@
-// Librerías
-#include <Servo.h>
-#include <DHT.h>
-#include <LiquidCrystal_I2C.h>
-#include <SPI.h>
-#include <SD.h>
-#include <IRremote.h>
+#include "config.h"
 
-// Pines de Hardware
-const int pinBoton1 = 3;
-const int pinBoton2 = 4;
-const int pinBoton3 = 5;
-const int pinBoton4 = 6;
-const int pinBoton5 = 7;
-
-const int servoPin = 10;
-const int dhtPin = 12;
-const int trigPin = 8;
-const int echoPin = 9;
-
-const int ledAzul = 2;
-const int ledRojo = A1;
-const int ledMorado = A2;
-const int ledAmarillo = A3;
-const int ledLuz = 11;
-
-// Nuevos Pines Mega
-const int chipSelect = 53; // CS para MicroSD
-const int irPin = 40;      // Receptor IR
-
+// ==========================================
+// VARIABLES DINÁMICAS Y OBJETOS
+// ==========================================
 // Variables Sistema Ascensor
 long duracion;
 float distancia;
@@ -49,20 +24,20 @@ float zonaMuertaTemp = 2;
 float setpointHum = 80;
 float zonaMuertaHum = 5;
 bool errorSensores = false;
+
+// Variables Seguridad y Eficiencia
 bool modoMantenimiento = false;
 bool modoEco = false;
 
 // Temporizadores Telemetría
 unsigned long tiempoUltimoLog = 0;
-const long intervaloLog = 5000; // Enviar datos cada 5 segundos
 
-// Objetos
-#define DHTTYPE DHT22
+// Instancias de Objetos
 DHT dht(dhtPin, DHTTYPE);
 Servo servo;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// Caracteres LCD
+// Caracteres personalizados LCD
 byte flechaArriba[8] = { B00100, B01110, B10101, B00100, B00100, B00100, B00100, B00000 };
 byte flechaAbajo[8] = { B00100, B00100, B00100, B00100, B10101, B01110, B00100, B00000 };
 
@@ -70,13 +45,11 @@ byte flechaAbajo[8] = { B00100, B00100, B00100, B00100, B10101, B01110, B00100, 
 // SETUP
 // =================================================================================
 void setup() {
-  // Inicialización de Buses Serie (Mega tiene múltiples)
-  Serial.begin(9600);  // Serial 0: Para depuración y monitor serie del PC
-  Serial1.begin(9600); // Serial 1: Simulación de Bus Industrial RS-485
+  Serial.begin(9600);  // Serial 0: Depuración
+  Serial1.begin(9600); // Serial 1: Bus Industrial RS-485
 
   Serial.println("Iniciando Sistema ACME S.A...");
 
-  // Configuración de Pines
   pinMode(pinBoton1, INPUT_PULLUP);
   pinMode(pinBoton2, INPUT_PULLUP);
   pinMode(pinBoton3, INPUT_PULLUP);
@@ -92,23 +65,18 @@ void setup() {
   pinMode(ledAmarillo, OUTPUT);
   pinMode(ledMorado, OUTPUT);
 
-  // Inicialización de Actuadores y Sensores
   servo.attach(servoPin);
   servo.write(0);
   dht.begin();
   
-  // Inicialización LCD
   lcd.init();
   lcd.backlight();
   lcd.createChar(0, flechaArriba);
   lcd.createChar(1, flechaAbajo);
 
-  // Inicialización Receptor IR
   IrReceiver.begin(irPin, ENABLE_LED_FEEDBACK);
   
-    // Inicialización Tarjeta SD
   Serial.print("Inicializando tarjeta SD... ");
-  
   pinMode(chipSelect, OUTPUT); 
   delay(1000); 
 
@@ -116,7 +84,6 @@ void setup() {
     Serial.println("Fallo o tarjeta no presente.");
   } else {
     Serial.println("Tarjeta inicializada OK.");
-    // Escribir cabecera del CSV si el archivo no existe
     File dataFile = SD.open("datalog.csv", FILE_WRITE);
     if (dataFile) {
       dataFile.println("Tiempo(ms),Planta,Temp(C),Hum(%),Luz(PWM),Estado");
@@ -129,10 +96,8 @@ void setup() {
 // LOOP PRINCIPAL
 // =================================================================================
 void loop() {
+  controlarIR(); 
   
-  controlarIR(); // Comprobar si hay órdenes remotas
-  
-  // Selección de planta física
   if (!enMovimiento) {
     if (digitalRead(pinBoton1) == LOW) {MoverAscensor(1, 0);}
     else if (digitalRead(pinBoton2) == LOW) {MoverAscensor(2, 45);}
@@ -141,7 +106,6 @@ void loop() {
     else if (digitalRead(pinBoton5) == LOW) {MoverAscensor(5, 180);}
   }
 
-  // Lógica de Movimiento
   if (enMovimiento) {
     unsigned long tiempoTranscurrido = millis() - tiempoInicioMovimiento;
     if (duracionMovimiento > 0) {
@@ -157,20 +121,14 @@ void loop() {
     }
   }
 
-  // Lecturas Ambientales y Control
   int brillo;
   float temperatura, humedad;
   
   controlarIluminacion(brillo);
   leerAmbiente(temperatura, humedad);
-  
-  // Autodiagnóstico de Sensores
   autodiagnostico(temperatura, humedad);
-
-  // Mostrar en HMI Local
   actualizarLCD(brillo, temperatura, humedad);
   
-  // Tareas Periódicas (SD y UART)
   if (millis() - tiempoUltimoLog >= intervaloLog) {
     tiempoUltimoLog = millis();
     telemetriaYLog(brillo, temperatura, humedad);
@@ -202,37 +160,34 @@ void controlarIR() {
   if (IrReceiver.decode()) {
     int comando = IrReceiver.decodedIRData.command;
     
-    Serial.print("Comando IR recibido: ");
-    Serial.println(comando);
-
-    // 1. PARADA DE EMERGENCIA / MANTENIMIENTO (Funciona siempre)
+    // 1. PARADA DE EMERGENCIA / MANTENIMIENTO
     if (comando == 162) { // Botón POWER
       modoMantenimiento = !modoMantenimiento;
       Serial.println(modoMantenimiento ? "MODO MANTENIMIENTO ACTIVADO" : "SISTEMA OPERATIVO");
     }
 
-    // 2. CONTROLES OPERATIVOS (Solo funcionan si no hay mantenimiento y está parado)
+    // 2. CONTROLES OPERATIVOS
     if (!modoMantenimiento && !enMovimiento) {
       switch (comando) {
-        // Llamadas a plantas
-        case 48: MoverAscensor(1, 0); break;   // Botón 1
-        case 24: MoverAscensor(2, 45); break;  // Botón 2
-        case 122: MoverAscensor(3, 90); break; // Botón 3
-        case 16: MoverAscensor(4, 135); break; // Botón 4
-        case 56: MoverAscensor(5, 180); break; // Botón 5
+        // Llamadas a plantas (Botones 1-5 del mando)
+        case 48: MoverAscensor(1, 0); break;   
+        case 24: MoverAscensor(2, 45); break;  
+        case 122: MoverAscensor(3, 90); break; 
+        case 16: MoverAscensor(4, 135); break; 
+        case 56: MoverAscensor(5, 180); break; 
         
-        // Ajuste de Temperatura (Consigna)
-        case 2: setpointTemp++; Serial.print("Temp Obj: "); Serial.println(setpointTemp); break; // Botón VOL+
-        case 152: setpointTemp--; Serial.print("Temp Obj: "); Serial.println(setpointTemp); break; // Botón VOL-
+        // Ajuste de Temperatura (Reemplaza los números si cambiaste de botones)
+        case 168: setpointTemp++; Serial.print("Temp Obj: "); Serial.println(setpointTemp); break; // VOL+
+        case 224: setpointTemp--; Serial.print("Temp Obj: "); Serial.println(setpointTemp); break; // VOL-
         
-        // Ajuste de Humedad (Consigna)
-        case 144: setpointHum += 5; Serial.print("Hum Obj: "); Serial.println(setpointHum); break; // Botón Fast Forward o UP
-        case 224: setpointHum -= 5; Serial.print("Hum Obj: "); Serial.println(setpointHum); break; // Botón Rewind o DOWN
+        // Ajuste de Humedad
+        case 144: setpointHum += 5; Serial.print("Hum Obj: "); Serial.println(setpointHum); break; // >>
+        case 208: setpointHum -= 5; Serial.print("Hum Obj: "); Serial.println(setpointHum); break; // <<
         
         // Perfil Energético
         case 34: // Botón TEST
           modoEco = !modoEco; 
-          zonaMuertaTemp = modoEco ? 5.0 : 2.0; // Cambia la histéresis
+          zonaMuertaTemp = modoEco ? 5.0 : 2.0; 
           Serial.println(modoEco ? "MODO ECO (Histéresis 5C)" : "MODO ESTÁNDAR (Histéresis 2C)");
           break;
       }
@@ -240,6 +195,7 @@ void controlarIR() {
     IrReceiver.resume();
   }
 }
+
 void controlarIluminacion(int &brillo) {
   int luz = analogRead(A0);
   if (luz > 600) {
@@ -271,16 +227,14 @@ void leerAmbiente(float &temperatura, float &humedad){
   estadoTemp = 0;
   estadoHum = 0;
 
-  // Si hay error o estamos en mantenimiento, apagamos todo por seguridad
   if (errorSensores || modoMantenimiento) {
     digitalWrite(ledRojo, LOW);
     digitalWrite(ledAzul, LOW);
     digitalWrite(ledMorado, LOW);
     digitalWrite(ledAmarillo, LOW);
-    return; // Salimos de la función sin evaluar la climatización
+    return; 
   }
 
-  // Lógica normal de TEMPERATURA
   if (!isnan(temperatura)) {
     if (temperatura < setpointTemp - zonaMuertaTemp) {
       digitalWrite(ledRojo, HIGH);
@@ -297,7 +251,6 @@ void leerAmbiente(float &temperatura, float &humedad){
     }
   }
 
-  // Lógica normal de HUMEDAD
   if (!isnan(humedad)) {
     if (humedad < setpointHum - zonaMuertaHum) {
       estadoHum = 1;
@@ -316,7 +269,6 @@ void leerAmbiente(float &temperatura, float &humedad){
 }
 
 void autodiagnostico(float t, float h) {
-  // Si el sensor devuelve NaN, se activa la bandera de error
   if (isnan(t) || isnan(h)) {
     errorSensores = true;
   } else {
@@ -325,7 +277,6 @@ void autodiagnostico(float t, float h) {
 }
 
 void actualizarLCD(int brillo, float temperatura, float humedad) {
-  // --- PRIMERA LÍNEA ---
   lcd.setCursor(0, 0);
   lcd.print("P:");
   if (enMovimiento) {
@@ -339,22 +290,18 @@ void actualizarLCD(int brillo, float temperatura, float humedad) {
   lcd.print(brillo);
   lcd.print("   "); 
 
-  // --- SEGUNDA LÍNEA ---
   lcd.setCursor(0, 1);
   
-  // 1. Alerta Prioritaria: Mantenimiento (Mando IR)
   if (modoMantenimiento) {
     lcd.print("EN MANTENIMIENTO");
-    return; // Sale de la función para no sobreescribir el texto
+    return; 
   }
   
-  // 2. Alerta Secundaria: Fallo del Sensor (Autodiagnóstico)
   if (errorSensores) {
     lcd.print("ERR SENSOR DHT22");
-    return; // Sale de la función
+    return; 
   }
 
-  // 3. Operación Normal: Muestra Temperatura y Humedad
   lcd.print("T:");
   lcd.print((int)temperatura);
   if (estadoTemp == 0) lcd.print("OK");
@@ -370,7 +317,6 @@ void actualizarLCD(int brillo, float temperatura, float humedad) {
 }
 
 void telemetriaYLog(int brillo, float t, float h) {
-  // 1. Envío por Bus Industrial simulado (Serial1) de forma directa
   Serial1.print("{\"P\":"); Serial1.print(plantaActual);
   Serial1.print(",\"T\":"); 
   if (errorSensores) Serial1.print("null"); else Serial1.print(t);
@@ -380,7 +326,6 @@ void telemetriaYLog(int brillo, float t, float h) {
   Serial1.print(",\"Err\":"); Serial1.print(errorSensores);
   Serial1.println("}");
 
-  // Monitorización local (Serial)
   Serial.print("TX: {\"P\":"); Serial.print(plantaActual);
   Serial.print(",\"T\":"); 
   if (errorSensores) Serial.print("null"); else Serial.print(t);
@@ -390,7 +335,6 @@ void telemetriaYLog(int brillo, float t, float h) {
   Serial.print(",\"Err\":"); Serial.print(errorSensores);
   Serial.println("}");
 
-  // 2. Registro en Tarjeta SD (Caja Negra)
   File dataFile = SD.open("datalog.csv", FILE_WRITE);
   if (dataFile) {
     dataFile.print(millis()); dataFile.print(",");
